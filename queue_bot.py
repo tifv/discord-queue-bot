@@ -242,7 +242,7 @@ class QueueBot(discord.Client):
             if not lock_acquired:
                 queue_state.lock.release()
 
-    async def consider_member( self, member, *,
+    async def update_student( self, member, *,
         guild=None, voice=None, voice_arg=False, allow_finish=False,
         queue_state=None, lock_acquired=False,
     ):
@@ -292,7 +292,7 @@ class QueueBot(discord.Client):
                 elif status == "astray":
                     emoji.add(EMOJI_ASTRAY)
                 await self.message_add_reactions(message, emoji)
-            for (channel_id, message_id) in garbage:
+            for channel_id, message_id in garbage:
                 del messages[channel_id]
                 finished.discard(message_id)
             queue_state.update()
@@ -324,7 +324,7 @@ class QueueBot(discord.Client):
                 try:
                     guild = self.get_guild(guild_id)
                     member = guild.get_member(member_id)
-                    await self.consider_member( member, guild=guild,
+                    await self.update_student( member, guild=guild,
                         queue_state=queue_state )
                 except Exception:
                     print(f"{guild.name} (id={guild.id}): error occured")
@@ -350,7 +350,7 @@ class QueueBot(discord.Client):
                 member=member, channel=channel,
                 queue_state=queue_state, lock_acquired=True )
             if changed:
-                await self.consider_member( member,
+                await self.update_student( member,
                     queue_state=queue_state, lock_acquired=True )
 
     async def on_voice_state_update(self, member, before, after):
@@ -358,7 +358,7 @@ class QueueBot(discord.Client):
             return
         if before.channel == after.channel:
             return
-        await self.consider_member(member, voice=after, allow_finish=True)
+        await self.update_student(member, voice=after, allow_finish=True)
 
     async def on_raw_reaction_add(self, payload):
         if payload.user_id == self.user.id:
@@ -388,7 +388,7 @@ class QueueBot(discord.Client):
                 member=member, channel=channel,
                 queue_state=queue_state, lock_acquired=True )
             if changed:
-                await self.consider_member( member,
+                await self.update_student( member,
                     queue_state=queue_state, lock_acquired=True )
 
     async def on_raw_reaction_remove(self, payload):
@@ -417,35 +417,38 @@ class QueueBot(discord.Client):
                 member=member, channel=channel,
                 queue_state=queue_state, lock_acquired=True )
             if changed:
-                await self.consider_member( member,
+                await self.update_student( member,
                     queue_state=queue_state, lock_acquired=True )
 
     on_raw_reaction_clear_emoji = on_raw_reaction_remove
     on_raw_reaction_clear = on_raw_reaction_remove
 
     async def message_add_reactions(self, message, emoji_set):
-        if not emoji_set <= EMOJI_SPECTRUM:
-            unknown_emoji = next(emoji_set - EMOJI_SPECTRUM)
-            raise RuntimeError(
-                f"Unrecognised emoji {unknown_emoji} "
-                f"(code {''.join(hex(ord(e)) for ee in unknown_emoji)})" )
-        me = self.user
-        emoji_add = set(emoji_set)
-        reactions_remove = list()
-        for reaction in message.reactions:
-            if reaction.emoji not in EMOJI_SPECTRUM:
-                continue
-            if reaction.emoji in emoji_set:
-                async for user in reaction.users():
-                    if user == me:
-                        emoji_add.discard(reaction.emoji)
-                        break
-            else:
-                reactions_remove.append(reaction)
-        for emoji in emoji_add:
-            await message.add_reaction(emoji)
-        for reaction in reactions_remove:
-            await reaction.clear()
+        try:
+            if not emoji_set <= EMOJI_SPECTRUM:
+                unknown_emoji = next(emoji_set - EMOJI_SPECTRUM)
+                raise RuntimeError(
+                    f"Unrecognised emoji {unknown_emoji} "
+                    f"(code {''.join(hex(ord(e)) for ee in unknown_emoji)})" )
+            me = self.user
+            emoji_add = set(emoji_set)
+            reactions_remove = list()
+            for reaction in message.reactions:
+                if reaction.emoji not in EMOJI_SPECTRUM:
+                    continue
+                if reaction.emoji in emoji_set:
+                    async for user in reaction.users():
+                        if user == me:
+                            emoji_add.discard(reaction.emoji)
+                            break
+                else:
+                    reactions_remove.append(reaction)
+            for emoji in emoji_add:
+                await message.add_reaction(emoji)
+            for reaction in reactions_remove:
+                await reaction.clear()
+        except (discord.NotFound, discord.Forbidden):
+            return
 
     async def on_command(self, message):
         # return whether it really should be considered a command
