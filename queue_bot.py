@@ -210,16 +210,17 @@ class QueueBot(discord.Client):
                 return False
             if channel.id in messages:
                 if messages[channel.id] == message.id:
-                    if EMOJI_FINISHED in emoji:
-                        if message.id not in finished:
-                            finished.add(message.id)
-                            queue_state.update()
-                            return True
-                    else:
-                        if message.id in finished:
-                            finished.discard(message.id)
-                            queue_state.update()
-                            return True
+                    if EMOJI_ACTIVE not in emoji:
+                        if EMOJI_FINISHED in emoji:
+                            if message.id not in finished:
+                                finished.add(message.id)
+                                queue_state.update()
+                                return True
+                        else:
+                            if message.id in finished:
+                                finished.discard(message.id)
+                                queue_state.update()
+                                return True
                     return False
                 old_message_id = messages[channel.id]
                 try:
@@ -282,17 +283,14 @@ class QueueBot(discord.Client):
                     garbage.append((channel_id, message_id))
                     continue
                 emoji = set()
-                if status == "astray":
-                    emoji.add(EMOJI_ASTRAY)
-                elif status == "active":
-                    emoji.add(EMOJI_ACTIVE)
-                if message_id in finished:
-                    emoji.add(EMOJI_FINISHED)
-                    emoji.discard(EMOJI_ASTRAY)
                 if message_id in prospective_finished:
-                    emoji.add(EMOJI_FINISHED)
                     finished.add(message_id)
-                    emoji.discard(EMOJI_ASTRAY)
+                if status == "active":
+                    emoji.add(EMOJI_ACTIVE)
+                elif message_id in finished:
+                    emoji.add(EMOJI_FINISHED)
+                elif status == "astray":
+                    emoji.add(EMOJI_ASTRAY)
                 await self.message_add_reactions(message, emoji)
             for (channel_id, message_id) in garbage:
                 del messages[channel_id]
@@ -336,7 +334,7 @@ class QueueBot(discord.Client):
         member = message.author
         if member == self.user:
             return
-        if self.user.mentioned_in(message):
+        if self.user in message.mentions:
             if await self.on_command(message):
                 return
         if self.member_is_teacher(member):
@@ -346,8 +344,14 @@ class QueueBot(discord.Client):
             return
         if not self.text_channel_is_queue(channel):
             return
-        if await self.consider_message(message, member=member, channel=channel):
-            await self.consider_member(member)
+        queue_state = await self.queue_state(None, member)
+        async with queue_state.lock:
+            changed = await self.consider_message( message,
+                member=member, channel=channel,
+                queue_state=queue_state, lock_acquired=True )
+            if changed:
+                await self.consider_member( member,
+                    queue_state=queue_state, lock_acquired=True )
 
     async def on_voice_state_update(self, member, before, after):
         if self.member_is_teacher(member):
@@ -380,10 +384,10 @@ class QueueBot(discord.Client):
             return
         queue_state = await self.queue_state(guild, member)
         async with queue_state.lock:
-            if await self.consider_message( message,
+            changed = await self.consider_message( message,
                 member=member, channel=channel,
-                queue_state=queue_state, lock_acquired=True,
-            ):
+                queue_state=queue_state, lock_acquired=True )
+            if changed:
                 await self.consider_member( member,
                     queue_state=queue_state, lock_acquired=True )
 
@@ -409,10 +413,10 @@ class QueueBot(discord.Client):
             return
         queue_state = await self.queue_state(guild, member)
         async with queue_state.lock:
-            if await self.consider_message( message,
+            changed = await self.consider_message( message,
                 member=member, channel=channel,
-                queue_state=queue_state, lock_acquired=True,
-            ):
+                queue_state=queue_state, lock_acquired=True )
+            if changed:
                 await self.consider_member( member,
                     queue_state=queue_state, lock_acquired=True )
 
