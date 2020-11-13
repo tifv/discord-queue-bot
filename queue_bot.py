@@ -227,12 +227,16 @@ class QueueBot(discord.Client):
                     old_message = await channel.fetch_message(old_message_id)
                 except (discord.NotFound, discord.Forbidden):
                     old_message = None
-                if old_message is not None:
-                    await self.message_add_reactions(message, {EMOJI_DUPLICATE})
-                    return False
-                else:
+                if old_message is None:
                     del messages[channel.id]
                     finished.discard(old_message_id)
+                elif old_message_id in finished:
+                    del messages[channel.id]
+                    finished.discard(old_message_id)
+                    await old_message.add_reaction(EMOJI_DUPLICATE)
+                else:
+                    await self.message_add_reactions(message, {EMOJI_DUPLICATE})
+                    return False
             messages[channel.id] = message.id
             if EMOJI_FINISHED in emoji:
                 finished.add(message.id)
