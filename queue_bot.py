@@ -96,14 +96,18 @@ class QueueBot(discord.Client):
             member = member.id
         if not isinstance(guild, int):
             guild = guild.id
-        try:
-            state = self.queue_states[guild, member]
-        except KeyError:
-            async with self.dict_lock:
-                state = self.queue_states[guild, member] = self.QueueState()
-            self.loop.create_task(
-                self.clean_queue_state(guild, member, state) )
-        return state
+        async with self.dict_lock:
+            try:
+                guild_states = self.queue_states[guild]
+            except KeyError:
+                guild_states = self.queue_states[guild] = dict()
+            try:
+                state = guild_states[member]
+            except KeyError:
+                state = guild_states[member] = self.QueueState()
+                self.loop.create_task(
+                    self.clean_queue_state(guild, member, state) )
+            return state
 
     async def clean_queue_state(self, guild_id, member_id, queue_state):
         while True:
@@ -113,9 +117,14 @@ class QueueBot(discord.Client):
                 continue
             break
         async with self.dict_lock:
-            if self.queue_states.get((guild_id, member_id)) \
-                    is queue_state:
-                del self.queue_states[guild_id, member_id]
+            if guild_id not in self.queue_states:
+                return
+            guild_states = self.queue_states[guild]
+            if member_id not in guild_states:
+                return
+            if guild_states[member_id] is not queue_state:
+                return
+            del guild_states[member_id]
         await self.vandalize_queue_state( guild_id, member_id,
             queue_state )
 
@@ -305,46 +314,54 @@ class QueueBot(discord.Client):
                 queue_state.lock.release()
 
     async def on_ready(self):
-        print(f"{self.user} has connected to Discord")
-        for guild in self.guilds:
-            print( f"{guild.name} (id={guild.id}): "
-                f"{guild.me.name}" )
-            try:
-                for channel in self.queue_channels(guild):
-                    async for message in channel.history(oldest_first=True):
-                        #if message.author == self.user:
-                        #    if message.content.startswith(QUEUE_RULES_PREFIX):
-                        #        await message.edit(
-                        #            content=QUEUE_RULES_PREFIX + "\n" + QUEUE_RULES )
-                        #    continue
-                        await self.consider_message( message,
-                            guild=guild, channel=channel )
-            except Exception:
-                print(f"{guild.name} (id={guild.id}): error occured")
-                traceback.print_exc()
+        print(
+            f"{self.user} has connected to Discord, "
+            f"and manages queues on {len(self.guilds)} servers" )
+
+    async def on_guild_available(self, guild):
+        me = guild.me
+        print( f"available {guild.name} (id={guild.id}): "
+            f"I am “{me.nick if me.nick is not None else me.name}”" )
+        await self.on_guild_reconsider(guild)
+
+    async def on_guild_unavailable(self, guild):
+        print( f"unavailable {guild.name} (id={guild.id})" )
         async with self.dict_lock:
-            for (guild_id, member_id), queue_state in \
-                    self.queue_states.items():
-                try:
-                    guild = self.get_guild(guild_id)
-                    member = guild.get_member(member_id)
-                    await self.update_student( member, guild=guild,
-                        queue_state=queue_state )
-                except Exception:
-                    print(f"{guild.name} (id={guild.id}): error occured")
-                    traceback.print_exc()
+            if guild.id in self.queue_states:
+                del self.queue_states[guild.id]
+
+    async def on_guild_reconsider(self, guild):
+        for channel in self.queue_channels(guild):
+            try:
+                async for message in channel.history(oldest_first=True):
+                    #if message.author == self.user:
+                    #    if message.content.startswith(QUEUE_RULES_PREFIX):
+                    #        await message.edit(
+                    #            content=QUEUE_RULES_PREFIX + "\n" + QUEUE_RULES )
+                    #    continue
+                    await self.consider_message( message,
+                        guild=guild, channel=channel )
+            except discord.Forbidden:
+                pass
+        async with self.dict_lock:
+            if guild.id not in self.queue_states:
+                return
+            for member_id, queue_state in self.queue_states[guild.id].items():
+                member = guild.get_member(member_id)
+                await self.update_student( member, guild=guild,
+                    queue_state=queue_state )
 
     async def on_message(self, message):
         member = message.author
+        channel = message.channel
         if member == self.user:
+            return
+        if not isinstance(channel, discord.TextChannel):
             return
         if self.user in message.mentions:
             if await self.on_command(message):
                 return
         if self.member_is_teacher(member):
-            return
-        channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
             return
         if not self.text_channel_is_queue(channel):
             return
