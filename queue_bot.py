@@ -1,61 +1,20 @@
+# Installation:
+# $ python3 -m virtualenv venv
+# $ venv/bin/python3 -m pip install -r requirements.txt
+
 # Execution:
-# DISCORD_TOKEN=<secret> python3 queue_bot.py
+# $ DISCORD_TOKEN=<secret> venv/bin/python3 queue_bot.py
 
 import os
-import traceback
+import argparse
 import asyncio
 import time
+from datetime import datetime, timezone, timedelta
+
+import logging, logging.handlers
+_LOGGER = logging.getLogger(__name__)
 
 import discord
-
-QUEUE_RULES_PREFIX = """
-В этом чате установлены следующие правила:
-""".strip()
-QUEUE_RULES_PREFIX_OTHER = """
-В чате очереди установлены следующие правила:
-""".strip()
-QUEUE_RULES = """
-:ok_hand: в очередь нужно записаться, указав задачи, которые вы хотите сдать;
-:rage: нельзя писать несколько сообщений; можно редактировать или удалять старое;
-:angry: записавшись, нужно подключиться к голосовому каналу очереди (с выключенным микрофоном);
-:face_with_monocle: свободный преподаватель переключит вас в свой канал для разговора;
-:woman_shrugging: поcле разговора сообщение из очереди нужно удалить.
-""".strip()
-
-QUEUE_ALGORITHM = """
-Я буду отмечать сообщения учеников в текстовом чате очереди одной из реакций :rage:, :angry:, :face_with_monocle:, :woman_shrugging: (или ни одной из них). Наличие реакции означает, что сообщение нерелевантно по той или иной причине.
-
-:rage: это не первое сообщение ученика в очереди;
-:angry: ученик не подключен ни к какому голосовому каналу;
-:face_with_monocle: ученик подключен (или его подключили) к некоторому голосовому каналу, кроме канала очереди;
-:woman_shrugging: ученик подключался (или его подключали) к некоторому голосовому каналу, кроме канала очереди (если у ученика есть несколько сообщений в разных чатах очереди, будет отмечено только одно из них — по умолчанию в первом канале по списку).
-
-Самостоятельно выйти из «прослушанного» состояния (:woman_shrugging:) ученик может, только удалив свое сообщение. Если преподаватель видит, что это состояние наступило некорректно (например, ученик случайно зашёл не в тот канал, или хотел сдавать определенному преподавателю), он может стереть все реакции у сообщения, вернув его к изначальному состоянию.
-
-Сообщения от преподавателей игнорируются (кроме команд).
-
-(Определения.
-_Преподаватель_ — это участник сервера, у которого есть роль, название которой начинается с «препод» в любом регистре.
-_Текстовый чат очереди_ — это любой текстовый чат, название которого начинается с «очередь» в любом регистре, либо находящийся в категории с подобным названием.
-_Голосовой канал очереди_ — это любой голосовой канал, название которого начинается с «очередь» в любом регистре, либо находящийся в категории с подобным названием.)
-""".strip()
-
-QUEUE_COMMANDS_SHORT = """
-Команды: «команды», «правила», «алгоритм», «следующий».
-""".strip()
-
-QUEUE_COMMANDS = """
-Команды:
-«команды» — список команд с описанием;
-«правила» — краткие правила очереди;
-«алгоритм» — более полное описание алгоритма;
-«следующий» — в чате очереди, переместить первого ученика в очереди в голосовой канал к преподавателю.
-""".strip()
-
-QUEUE_PREFIX = "очередь"
-TEXT_QUEUE_PREFIX = QUEUE_PREFIX
-VOICE_QUEUE_PREFIX = QUEUE_PREFIX
-TEACHER_ROLE_PREFIX = "препод"
 
 EMOJI_ASTRAY = "\N{ANGRY FACE}"
 EMOJI_ACTIVE = "\N{FACE WITH MONOCLE}"
@@ -68,15 +27,76 @@ EMOJI_SPECTRUM = frozenset({
     EMOJI_DUPLICATE,
 })
 
+QUEUE_RULES_PREFIX = """
+В этом чате установлены следующие правила:
+""".strip('\n')
+QUEUE_RULES_PREFIX_OTHER = """
+В чате очереди установлены следующие правила:
+""".strip('\n')
+QUEUE_RULES = f"""
+\N{HEAVY CHECK MARK} в очередь нужно записаться, указав задачи, которые вы хотите сдать;
+{EMOJI_DUPLICATE} нельзя писать несколько сообщений; можно редактировать или удалять старое;
+{EMOJI_ASTRAY} записавшись, нужно подключиться к голосовому каналу очереди (с выключенным микрофоном);
+{EMOJI_ACTIVE} свободный преподаватель переключит вас в свой канал для разговора;
+{EMOJI_FINISHED} поcле разговора сообщение из очереди нужно удалить.
+""".strip('\n')
+
+QUEUE_ALGORITHM = f"""
+Я буду отмечать сообщения учеников в текстовом чате очереди одной из реакций {EMOJI_DUPLICATE}, {EMOJI_ASTRAY}, {EMOJI_ACTIVE}, {EMOJI_FINISHED} (или ни одной из них). Наличие реакции означает, что сообщение нерелевантно по той или иной причине.
+
+{EMOJI_DUPLICATE} это не первое сообщение ученика в очереди;
+{EMOJI_ASTRAY} ученик не подключен ни к какому голосовому каналу;
+{EMOJI_ACTIVE} ученик подключен (или его подключили) к некоторому голосовому каналу, кроме канала очереди;
+{EMOJI_FINISHED} ученик подключался (или его подключали) к некоторому голосовому каналу, кроме канала очереди (если у ученика есть несколько сообщений в разных чатах очереди, будет отмечено только одно из них — по умолчанию в первом канале по списку).
+
+Самостоятельно выйти из «прослушанного» состояния ({EMOJI_FINISHED}) ученик может, только удалив свое сообщение. Если преподаватель видит, что это состояние наступило некорректно (например, ученик случайно зашёл не в тот канал, или хотел сдавать определенному преподавателю), он может стереть все реакции у сообщения, вернув его к изначальному состоянию.
+
+Сообщения от преподавателей игнорируются (кроме команд).
+
+(Определения.
+_Преподаватель_ — это участник сервера, у которого есть роль, название которой начинается с «препод» в любом регистре.
+_Текстовый чат очереди_ — это любой текстовый чат, название которого начинается с «очередь» в любом регистре, либо находящийся в категории с подобным названием.
+_Голосовой канал очереди_ — это любой голосовой канал, название которого начинается с «очередь» в любом регистре, либо находящийся в категории с подобным названием.)
+""".strip('\n')
+
+QUEUE_COMMANDS_SHORT = """
+Команды: «команды», «правила», «алгоритм», «следующий».
+""".strip('\n')
+
+QUEUE_COMMANDS = """
+Команды:
+«команды» — список команд с описанием;
+«правила» — краткие правила очереди;
+«алгоритм» — более полное описание алгоритма;
+«следующий» — в чате очереди, переместить первого ученика в очереди в голосовой канал к преподавателю.
+""".strip('\n')
+
+EDIT_RULES_ON_STARTUP = True
+
+QUEUE_PREFIX = "очередь"
+TEXT_QUEUE_PREFIX = QUEUE_PREFIX
+VOICE_QUEUE_PREFIX = QUEUE_PREFIX
+TEACHER_ROLE_PREFIX = "препод"
+
+TIME_LIMIT_CLEAN  = 60 * 60 * 24 * 7
+TIME_LIMIT_ACTIVE = 60 * 60
+TIME_EPSILON = 10
+
 class QueueBot(discord.Client):
 
     def __init__(self, *args, **kwargs):
-        self.queue_states = dict()
-        self.dict_lock = asyncio.Lock()
         kwargs["intents"] = discord.Intents(
             guilds=True, members=True,
             messages=True, voice_states=True, reactions=True )
         super().__init__(*args, **kwargs)
+        self.queue_states = dict()
+        self.dict_lock = asyncio.Lock()
+        self.student_activity = self.StudentActivity(self.loop)
+        self.student_activity.start_monitor()
+
+    async def on_error(self, event, *args, **kwargs):
+        _LOGGER.exception( f"Exception in {event}",
+            exc_info=True )
 
     class QueueState:
 
@@ -111,20 +131,22 @@ class QueueBot(discord.Client):
 
     async def clean_queue_state(self, guild_id, member_id, queue_state):
         while True:
-            delta = queue_state.mtime + 1_000_000 - time.monotonic()
-            if delta > 10:
-                await asyncio.sleep(delta)
+            delta = queue_state.mtime + TIME_LIMIT_CLEAN - time.monotonic()
+            if delta > 0:
+                await asyncio.sleep(delta + TIME_EPSILON)
                 continue
             break
         async with self.dict_lock:
             if guild_id not in self.queue_states:
                 return
-            guild_states = self.queue_states[guild]
+            guild_states = self.queue_states[guild_id]
             if member_id not in guild_states:
                 return
             if guild_states[member_id] is not queue_state:
                 return
             del guild_states[member_id]
+            if not guild_states:
+                del self.queue_states[guild_id]
         await self.vandalize_queue_state( guild_id, member_id,
             queue_state )
 
@@ -136,7 +158,6 @@ class QueueBot(discord.Client):
             member = guild.get_member(member_id)
             if member is None:
                 return
-            print(queue_state.messages)
             for channel_id, message_id in queue_state.messages.items():
                 channel = guild.get_channel(channel_id)
                 if channel is None:
@@ -148,6 +169,92 @@ class QueueBot(discord.Client):
                 await self.message_add_reactions(message, {EMOJI_DUPLICATE})
             queue_state.messages.clear()
             queue_state.finished.clear()
+
+    class StudentActivity(dict):
+
+        def __init__(self, loop):
+            self.loop = loop
+            self.awaken = asyncio.Event()
+            self.wake_task = None
+            self.wake_time = None
+
+        def start_monitor(self):
+            self.loop.create_task(self.monitor())
+
+        async def monitor(self):
+            while True:
+                await self.awaken.wait()
+                self.awaken.clear()
+                self.wake_task = self.wake_time = None
+                now = time.monotonic()
+                gone_inactive = set()
+                deltas = list()
+                for guild, atime in self.items():
+                    delta = atime + TIME_LIMIT_ACTIVE - now
+                    if delta <= 0:
+                        gone_inactive.add(guild)
+                    else:
+                        deltas.append(delta)
+                for guild in gone_inactive:
+                    del self[guild]
+                    self.report_inactive(guild)
+                if deltas:
+                    self.delay_wake(duration=min(deltas) + TIME_EPSILON)
+                else:
+                    self.report_silence()
+
+        def report_silence(self):
+            _LOGGER.info(
+                f"All servers have gone inactive" )
+
+        def report_active(self, guild):
+            _LOGGER.info(
+                f"Server “{guild.name}” (id={guild.id}) has become active" )
+
+        def report_inactive(self, guild):
+            guild_name = guild.name
+            if guild_name is None:
+                guild_name = "<unavailable>"
+            _LOGGER.info(
+                f"Server “{guild_name}” (id={guild.id}) has gone inactive" )
+
+        def note_guild(self, guild, mtime=None):
+            fresh = guild not in self
+            now = time.monotonic()
+            if mtime is not None:
+                age = ( datetime.now(timezone.utc).replace(tzinfo=None)
+                    - mtime ).total_seconds()
+                if age >= TIME_LIMIT_ACTIVE:
+                    return
+                now -= age
+            if fresh:
+                self.report_active(guild)
+            self[guild] = now
+            if fresh:
+                self.delay_wake( now=now,
+                    duration=TIME_LIMIT_ACTIVE + TIME_EPSILON )
+
+        def clear_guild(self, guild):
+            if guild in self:
+                del self[guild]
+                self.report_inactive(guild)
+
+        def delay_wake(self, *, now=None, duration):
+            if now is None:
+                now = time.monotonic()
+            wake_time = now + duration
+            if self.wake_task is not None:
+                if self.wake_time <= wake_time:
+                    return
+                self.wake_task.cancel()
+                self.wake_task = self.wake_time = None
+            self.wake_task = self.loop.create_task(
+                self.wait_and_wake(duration) )
+            self.wake_time = wake_time
+
+        async def wait_and_wake(self, duration):
+            await asyncio.sleep(duration)
+            self.awaken.set()
 
     def member_is_teacher(self, member):
         return any(
@@ -180,6 +287,7 @@ class QueueBot(discord.Client):
     async def consider_message( self, message, *,
         guild=None, channel=None, member=None,
         queue_state=None, lock_acquired=False,
+        historical=False,
     ):
         # return whether something has changed
         if member is None:
@@ -200,6 +308,8 @@ class QueueBot(discord.Client):
             guild = member.guild
             assert guild == channel.guild
         if queue_state is None:
+            if lock_acquired:
+                raise RuntimeError("escaping potential deadlock")
             queue_state = await self.queue_state(guild, member)
         if not lock_acquired:
             await queue_state.lock.acquire()
@@ -224,11 +334,13 @@ class QueueBot(discord.Client):
                             if message.id not in finished:
                                 finished.add(message.id)
                                 queue_state.update()
+                                self.student_activity.note_guild(guild)
                                 return True
                         else:
                             if message.id in finished:
                                 finished.discard(message.id)
                                 queue_state.update()
+                                self.student_activity.note_guild(guild)
                                 return True
                     return False
                 old_message_id = messages[channel.id]
@@ -250,6 +362,11 @@ class QueueBot(discord.Client):
             if EMOJI_FINISHED in emoji:
                 finished.add(message.id)
             queue_state.update()
+            if not historical:
+                self.student_activity.note_guild(guild)
+            else:
+                self.student_activity.note_guild( guild,
+                    mtime=message.created_at )
             return True
         finally:
             if not lock_acquired:
@@ -262,6 +379,8 @@ class QueueBot(discord.Client):
         if guild is None:
             guild = member.guild
         if queue_state is None:
+            if lock_acquired:
+                raise RuntimeError("escaping potential deadlock")
             queue_state = await self.queue_state(guild, member)
         if not lock_acquired:
             await queue_state.lock.acquire()
@@ -284,6 +403,7 @@ class QueueBot(discord.Client):
                             continue
                         prospective_finished.add(messages[channel.id])
                         break
+                self.student_activity.note_guild(guild)
             garbage = list()
             for channel_id, message_id in messages.items():
                 channel = guild.get_channel(channel_id)
@@ -314,35 +434,33 @@ class QueueBot(discord.Client):
                 queue_state.lock.release()
 
     async def on_ready(self):
-        print(
+        _LOGGER.info(
             f"{self.user} has connected to Discord, "
             f"and manages queues on {len(self.guilds)} servers" )
 
     async def on_guild_available(self, guild):
         me = guild.me
-        print( f"available {guild.name} (id={guild.id}): "
+        _LOGGER.info(
+            f"Server “{guild.name}” (id={guild.id}) is available, and "
             f"I am “{me.nick if me.nick is not None else me.name}”" )
-        await self.on_guild_reconsider(guild)
+        await self.reconsider_guild(guild)
+
+    on_guild_join = on_guild_available
 
     async def on_guild_unavailable(self, guild):
-        print( f"unavailable {guild.name} (id={guild.id})" )
+        guild_name = guild.name
+        if guild_name is None:
+            guild_name = "<unavailable>"
+        _LOGGER.info(
+            f"Server “{guild_name}” (id={guild.id}) is unavailable" )
         async with self.dict_lock:
             if guild.id in self.queue_states:
                 del self.queue_states[guild.id]
+        self.student_activity.clear_guild(guild)
 
-    async def on_guild_reconsider(self, guild):
+    async def reconsider_guild(self, guild):
         for channel in self.queue_channels(guild):
-            try:
-                async for message in channel.history(oldest_first=True):
-                    #if message.author == self.user:
-                    #    if message.content.startswith(QUEUE_RULES_PREFIX):
-                    #        await message.edit(
-                    #            content=QUEUE_RULES_PREFIX + "\n" + QUEUE_RULES )
-                    #    continue
-                    await self.consider_message( message,
-                        guild=guild, channel=channel )
-            except discord.Forbidden:
-                pass
+            await self.reconsider_channel(channel, guild=guild)
         async with self.dict_lock:
             if guild.id not in self.queue_states:
                 return
@@ -350,6 +468,33 @@ class QueueBot(discord.Client):
                 member = guild.get_member(member_id)
                 await self.update_student( member, guild=guild,
                     queue_state=queue_state )
+
+    async def reconsider_channel(self, channel, *, guild):
+        try:
+            prehistoric = ( datetime.now(timezone.utc).replace(tzinfo=None) -
+                timedelta(TIME_LIMIT_CLEAN) )
+            prehistoric_limit = 7
+            async for message in channel.history(limit=None):
+                if EDIT_RULES_ON_STARTUP and message.author == self.user:
+                    content = message.content
+                    if not content.startswith(QUEUE_RULES_PREFIX):
+                        continue
+                    if content == QUEUE_RULES_PREFIX + "\n" + QUEUE_RULES:
+                        continue
+                    _LOGGER.info("editing previously posted rules")
+                    await message.edit(
+                        content=QUEUE_RULES_PREFIX + "\n" + QUEUE_RULES )
+                    prehistoric_limit = 0
+                    continue
+                if message.created_at <= prehistoric:
+                    prehistoric_limit -= 1
+                    if prehistoric_limit < 0:
+                        break
+                await self.consider_message( message,
+                    guild=guild, channel=channel,
+                    historical=True )
+        except discord.Forbidden:
+            pass
 
     async def on_message(self, message):
         member = message.author
@@ -496,7 +641,11 @@ class QueueBot(discord.Client):
             if not self.text_channel_is_queue(channel):
                 await channel.send( f"<@!{message.author.id}> "
                     "Команду «следующий» можно запускать "
-                    "только в чате очереди." )
+                    "только в чате очереди.",
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False, roles=False,
+                        users=[message.author] )
+                )
                 return True
             await self.on_command_next(channel, message.author)
             await message.delete()
@@ -509,10 +658,16 @@ class QueueBot(discord.Client):
     async def on_command_rules(self, channel, *, is_queue=False):
         #nick = channel.guild.me.nick
         prefix = QUEUE_RULES_PREFIX if is_queue else QUEUE_RULES_PREFIX_OTHER
-        await channel.send(prefix + "\n" + QUEUE_RULES)
+        await channel.send( prefix + "\n" + QUEUE_RULES,
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=False )
+        )
 
     async def on_command_algorithm(self, channel):
-        await channel.send(QUEUE_ALGORITHM)
+        await channel.send( QUEUE_ALGORITHM,
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=False )
+        )
 
     async def on_command_next(self, channel, teacher):
         guild = channel.guild
@@ -556,11 +711,44 @@ class QueueBot(discord.Client):
         sentences.append(
             f"Формат команд: `@{channel.guild.me.name} <команда>`." )
         sentences.append(QUEUE_COMMANDS_SHORT if short else QUEUE_COMMANDS)
-        await channel.send(" ".join(sentences))
+        await channel.send( " ".join(sentences),
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False,
+                users=[reply_to] if reply_to is not None else False )
+        )
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser("QueueBot for Discord")
+    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING"], default="INFO")
+    parser.add_argument("--log-file")
+    args = parser.parse_args()
+    _LOGGER.setLevel(args.log_level)
+    log_formatter = logging.Formatter(
+        "%(asctime)s %(message)s",
+        "%Y-%m-%d %H:%M:%S" )
+    if args.log_file is None:
+        log_stream_handler = logging.StreamHandler()
+        _LOGGER.addHandler(log_stream_handler)
+        log_handler.setFormatter(log_formatter)
+    else:
+        log_stream_handler = logging.StreamHandler()
+        log_stream_handler.setLevel("ERROR")
+        log_stream_handler.setFormatter(log_formatter)
+        _LOGGER.addHandler(log_stream_handler)
+        log_file_handler = logging.handlers.RotatingFileHandler(
+            args.log_file,
+            maxBytes=(1 << 18), backupCount=1 )
+        def antirotator(source, dest):
+            with open(source, "wb"):
+                pass
+        log_file_handler.rotator = antirotator
+        log_file_handler.setFormatter(log_formatter)
+        _LOGGER.addHandler(log_file_handler)
+    _LOGGER.info("starting up")
+    _LOGGER.debug("debug output enabled")
     client = QueueBot()
     client.run(os.getenv('DISCORD_TOKEN'))
+    _LOGGER.info("shutting down")
 
 # vim: set wrap lbr :
