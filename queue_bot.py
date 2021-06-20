@@ -12,12 +12,12 @@ import discord
 EMOJI_ASTRAY = "\N{ANGRY FACE}"
 EMOJI_ACTIVE = "\N{FACE WITH MONOCLE}"
 EMOJI_FINISHED = "\N{SHRUG}\N{ZWJ}\N{FEMALE SIGN}\uFE0F"
-EMOJI_DUPLICATE = "\N{POUTING FACE}"
+EMOJI_IGNORED = "\N{POUTING FACE}"
 EMOJI_SPECTRUM = frozenset({
     EMOJI_ASTRAY,
     EMOJI_ACTIVE,
     EMOJI_FINISHED,
-    EMOJI_DUPLICATE,
+    EMOJI_IGNORED,
 })
 
 QUEUE_RULES_PREFIX = """
@@ -28,16 +28,16 @@ QUEUE_RULES_PREFIX_OTHER = """
 """.strip('\n')
 QUEUE_RULES = f"""
 \N{HEAVY CHECK MARK} в очередь нужно записаться, указав задачи, которые вы хотите сдать;
-{EMOJI_DUPLICATE} нельзя писать несколько сообщений; можно редактировать или удалять старое;
+{EMOJI_IGNORED} нельзя писать несколько сообщений; можно редактировать или удалять старое;
 {EMOJI_ASTRAY} записавшись, нужно подключиться к голосовому каналу очереди (с выключенным микрофоном);
 {EMOJI_ACTIVE} свободный преподаватель переключит вас в свой канал для разговора;
 {EMOJI_FINISHED} поcле разговора сообщение из очереди нужно удалить.
 """.strip('\n')
 
 QUEUE_ALGORITHM = f"""
-Я буду отмечать сообщения учеников в текстовом чате очереди одной из реакций {EMOJI_DUPLICATE}, {EMOJI_ASTRAY}, {EMOJI_ACTIVE}, {EMOJI_FINISHED} (или ни одной из них). Наличие реакции означает, что сообщение нерелевантно по той или иной причине.
+Я буду отмечать сообщения учеников в текстовом чате очереди одной из реакций {EMOJI_IGNORED}, {EMOJI_ASTRAY}, {EMOJI_ACTIVE}, {EMOJI_FINISHED} (или ни одной из них). Наличие реакции означает, что сообщение нерелевантно по той или иной причине.
 
-{EMOJI_DUPLICATE} это не первое сообщение ученика в очереди;
+{EMOJI_IGNORED} это не первое сообщение ученика в очереди;
 {EMOJI_ASTRAY} ученик не подключен ни к какому голосовому каналу;
 {EMOJI_ACTIVE} ученик подключен (или его подключили) к некоторому голосовому каналу, кроме канала очереди;
 {EMOJI_FINISHED} ученик подключался (или его подключали) к некоторому голосовому каналу, кроме канала очереди (если у ученика есть несколько сообщений в разных чатах очереди, будет отмечено только одно из них — по умолчанию в первом канале по списку).
@@ -159,7 +159,7 @@ class QueueBot(discord.Client):
                     message = await channel.fetch_message(message_id)
                 except (discord.NotFound, discord.Forbidden):
                     continue
-                await self.message_add_reactions(message, {EMOJI_DUPLICATE})
+                await self.message_add_reactions(message, {EMOJI_IGNORED})
             queue_state.messages.clear()
             queue_state.finished.clear()
 
@@ -312,7 +312,7 @@ class QueueBot(discord.Client):
             emoji = set( reaction.emoji
                 for reaction in message.reactions
                 if reaction.emoji in EMOJI_SPECTRUM )
-            if EMOJI_DUPLICATE in emoji:
+            if EMOJI_IGNORED in emoji:
                 if channel.id in messages and \
                         messages[channel.id] == message.id:
                     del messages[channel.id]
@@ -347,9 +347,9 @@ class QueueBot(discord.Client):
                 elif old_message_id in finished:
                     del messages[channel.id]
                     finished.discard(old_message_id)
-                    await old_message.add_reaction(EMOJI_DUPLICATE)
+                    await old_message.add_reaction(EMOJI_IGNORED)
                 else:
-                    await self.message_add_reactions(message, {EMOJI_DUPLICATE})
+                    await self.message_add_reactions(message, {EMOJI_IGNORED})
                     return False
             messages[channel.id] = message.id
             if EMOJI_FINISHED in emoji:
