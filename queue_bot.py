@@ -88,8 +88,28 @@ class QueueBot(discord.Client):
         self.student_activity.start_monitor()
 
     async def on_error(self, event, *args, **kwargs):
-        _LOGGER.exception( f"Exception in {event}",
-            exc_info=True )
+        def recover_guild(*args, **kwargs):
+            return None
+        if event == 'on_message':
+            def recover_guild(message):
+                return message.guild
+        elif event == 'on_voice_state_update':
+            def recover_guild(member, before, after):
+                if isinstance(member, discord.Member):
+                    return member.guild
+        elif event == 'on_raw_reaction_add' or event == 'on_raw_reaction_remove':
+            def recover_guild(payload):
+                if payload.guild_id is not None:
+                    return self.get_guild(payload.guild_id)
+        try:
+            guild = recover_guild(*args, **kwargs)
+        except Exception as error:
+            _LOGGER.exception( "Exception while determining guild in on_error",
+                exc_info=True )
+        prefix = f"Exception in {event}"
+        if guild is not None:
+            prefix += f" (guild “{guild.name}”)"
+        _LOGGER.exception(prefix, exc_info=True)
 
     class QueueState:
 
@@ -250,6 +270,8 @@ class QueueBot(discord.Client):
             self.awaken.set()
 
     def member_is_teacher(self, member):
+        if not isinstance(member, discord.Member):
+            return False
         return any(
             role.name.lower().startswith(TEACHER_ROLE_PREFIX)
             for role in member.roles )
@@ -347,7 +369,7 @@ class QueueBot(discord.Client):
                 elif old_message_id in finished:
                     del messages[channel.id]
                     finished.discard(old_message_id)
-                    await old_message.add_reaction(EMOJI_IGNORED)
+                    await self.message_ignore(old_message)
                 else:
                     await self.message_add_reactions(message, {EMOJI_IGNORED})
                     return False
@@ -581,6 +603,12 @@ class QueueBot(discord.Client):
 
     on_raw_reaction_clear_emoji = on_raw_reaction_remove
     on_raw_reaction_clear = on_raw_reaction_remove
+
+    async def message_ignore(self, message):
+        try:
+            await message.add_reaction(EMOJI_IGNORED)
+        except (discord.NotFound, discord.Forbidden):
+            return
 
     async def message_add_reactions(self, message, emoji_set):
         try:
