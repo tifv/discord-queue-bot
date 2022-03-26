@@ -751,7 +751,7 @@ if __name__ == '__main__':
     if args.log_file is None:
         log_stream_handler = logging.StreamHandler()
         _LOGGER.addHandler(log_stream_handler)
-        log_handler.setFormatter(log_formatter)
+        log_stream_handler.setFormatter(log_formatter)
     else:
         log_stream_handler = logging.StreamHandler()
         log_stream_handler.setLevel("ERROR")
