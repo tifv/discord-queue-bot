@@ -2,7 +2,7 @@ import os
 import argparse
 import asyncio
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import timedelta
 
 import logging, logging.handlers
 _LOGGER = logging.getLogger(__name__)
@@ -84,7 +84,9 @@ class QueueBot(discord.Client):
         super().__init__(*args, **kwargs)
         self.queue_states = dict()
         self.dict_lock = asyncio.Lock()
-        self.student_activity = self.StudentActivity(self.loop)
+        self.student_activity = self.StudentActivity()
+
+    async def setup_hook(self):
         self.student_activity.start_monitor()
 
     async def on_error(self, event, *args, **kwargs):
@@ -138,7 +140,7 @@ class QueueBot(discord.Client):
                 state = guild_states[member]
             except KeyError:
                 state = guild_states[member] = self.QueueState()
-                self.loop.create_task(
+                asyncio.get_running_loop().create_task(
                     self.clean_queue_state(guild, member, state) )
             return state
 
@@ -185,14 +187,13 @@ class QueueBot(discord.Client):
 
     class StudentActivity(dict):
 
-        def __init__(self, loop):
-            self.loop = loop
+        def __init__(self):
             self.awaken = asyncio.Event()
             self.wake_task = None
             self.wake_time = None
 
         def start_monitor(self):
-            self.loop.create_task(self.monitor())
+            asyncio.get_running_loop().create_task(self.monitor())
 
         async def monitor(self):
             while True:
@@ -235,8 +236,7 @@ class QueueBot(discord.Client):
             fresh = guild not in self
             now = time.monotonic()
             if mtime is not None:
-                age = ( datetime.now(timezone.utc).replace(tzinfo=None)
-                    - mtime ).total_seconds()
+                age = (discord.utils.utcnow() - mtime).total_seconds()
                 if age >= TIME_LIMIT_ACTIVE:
                     return
                 now -= age
@@ -261,7 +261,7 @@ class QueueBot(discord.Client):
                     return
                 self.wake_task.cancel()
                 self.wake_task = self.wake_time = None
-            self.wake_task = self.loop.create_task(
+            self.wake_task = asyncio.get_running_loop().create_task(
                 self.wait_and_wake(duration) )
             self.wake_time = wake_time
 
@@ -486,8 +486,7 @@ class QueueBot(discord.Client):
 
     async def reconsider_channel(self, channel, *, guild):
         try:
-            prehistoric = ( datetime.now(timezone.utc).replace(tzinfo=None) -
-                timedelta(TIME_LIMIT_CLEAN) )
+            prehistoric = discord.utils.utcnow() - timedelta(TIME_LIMIT_CLEAN)
             prehistoric_limit = 7
             async for message in channel.history(limit=None):
                 if EDIT_RULES_ON_STARTUP and message.author == self.user:
@@ -738,8 +737,7 @@ class QueueBot(discord.Client):
                 users=[reply_to] if reply_to is not None else False )
         )
 
-
-if __name__ == '__main__':
+async def main():
     parser = argparse.ArgumentParser("QueueBot for Discord")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING"], default="INFO")
     parser.add_argument("--log-file")
@@ -769,7 +767,10 @@ if __name__ == '__main__':
     _LOGGER.info("starting up")
     _LOGGER.debug("debug output enabled")
     client = QueueBot()
-    client.run(os.getenv('DISCORD_TOKEN'))
+    await client.start(os.getenv('DISCORD_TOKEN'))
     _LOGGER.info("shutting down")
+
+if __name__ == '__main__':
+    asyncio.run(main())
 
 # vim: set wrap lbr :
